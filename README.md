@@ -3,7 +3,11 @@
 Arduino-based USB interface for Logitech G27 pedals and shifter:
 
 ![on breadboard](Breadboard.jpg)
-![in altoids tin](Altoids Tin.jpg)
+![in altoids tin](Altoids_Tin.jpg)
+
+## Credits
+
+This fork wouldn't have been possible without the great project from functionreturnfunction: https://github.com/functionreturnfunction/G27_Pedals_and_Shifter. I am going to maintain this fork as long as my G27 shifter and pedals live on.
 
 ## Required Parts/Materials
 
