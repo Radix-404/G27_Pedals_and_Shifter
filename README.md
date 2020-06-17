@@ -2,8 +2,8 @@
 
 Arduino-based USB interface for Logitech G27 pedals and shifter:
 
-![on breadboard](Breadboard.jpg)
-![in altoids tin](Altoids_Tin.jpg)
+![on breadboard](screenshots/Breadboard.jpg)
+![in altoids tin](screenshots/Altoids_Tin.jpg)
 
 ## Credits
 
@@ -32,14 +32,22 @@ After the firmware has been uploaded to the arduino, you want to calibrate and c
 
 ### GUI installation
 
-This description assumes a windows operating system. Other operating systems are similar. You need python3 for running this GUI, I suggest to get the interpreter at http://winpython.github.io/. I'd choose the minimal python 3.7 64 bit version, but other versions or distributions should also work. When you have a python interpreter in place, I suggest to create a virtual environment using the shell commands:
+#### Using binary releases (windows only)
+
+The easiest method is to download g27calib.zip from the latest release here https://github.com/n-e-y-s/G27_Pedals_and_Shifter/releases/latest. Unzip this to a location of your choice and then start g27calib.exe located inside. 
+
+#### Alterantively use python directly
+
+This description assumes a windows operating system (other operating systems are similar; I have tested linux and windows). You need python3 for running this GUI - if you don't have a python3 interpreter on your system already, I suggest to get the interpreter at http://winpython.github.io/. I'd choose the minimal python 3.7 64 bit version, but other versions or distributions should also work. 
+
+When you have a python interpreter in place, I suggest to create a virtual environment using the shell commands:
     
     cd <a path of your choice>
     python -m venv g27calib
 
 This command creates a virtual python environment in the directory g27calib. Afterwards you can install the GUI with 
 
-    .\g27calib\Scripts\pip install git+https://github.com/n-e-y-s/G27_Pedals_and_Shifter@n-e-y-s_devel#egg=G27_Pedals_and_Shifter_GUI
+    .\g27calib\Scripts\pip install git+https://github.com/n-e-y-s/G27_Pedals_and_Shifter@master#egg=G27_Pedals_and_Shifter_GUI
 
 Of course you can also specify a local path alternatively to the git path above. Pip downloads some packages from the internet and finally you should be able to start
 
@@ -49,7 +57,7 @@ and the gui should open.
 
 ### Calibration process
 
-At first you need to select the Arduino serial device. On linux platforms, it is also necessary to select the joystick device of the G27, otherwise the GUI might be very slow:
+At first you need to select the Arduino serial device (note that this is **not** COM1 on windows). On linux platforms, it is also necessary to select the joystick device of the G27, otherwise the GUI might be very slow:
 
 ![device selector](screenshots/device_selector.png)
 
