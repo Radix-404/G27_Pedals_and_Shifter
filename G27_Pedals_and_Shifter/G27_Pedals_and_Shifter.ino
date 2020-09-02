@@ -81,10 +81,19 @@
 
 #define CALIB_DATA_MAGIC_NUMBER 0x27CA11B1 // change this when the struct definition changes
 
-#define FLAG_INVERT_BRAKE 0x1 // invert brake pedal
-#define FLAG_INVERT_GAS 0x2 // invert gas pedal
-#define FLAG_INVERT_CLUTCH 0x4 // invert clutch pedal
-#define FLAG_REVERSE_RIGHT_RED 0x8 // use right red button for reverse gear instead of the reverse sensor
+#define FLAG1_INVERT_BRAKE 0x1 // invert brake pedal
+#define FLAG1_INVERT_GAS 0x2 // invert gas pedal
+#define FLAG1_INVERT_CLUTCH 0x4 // invert clutch pedal
+#define FLAG1_REVERSE_RIGHT_RED 0x8 // use right red button for reverse gear instead of the reverse sensor
+#define FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z 0x10 // combine clutch and gas
+#define FLAG1_COMBINE_Z_EQUALS_Z_MINUS_X 0x20 // combine clutch and gas
+
+#define FLAG2_ENABLE_PEDALS 0x1
+#define FLAG2_BRAKE_DEAD_ZONE (0x2|0x4|0x8) // deadZone_percent = ((flag & FLAG2_BRAKE_DEAD_ZONE) >> 1)*2
+#define FLAG2_GAS_DEAD_ZONE (0x10|0x20|0x40) // deadZone_percent = ((flag & FLAG2_GAS_DEAD_ZONE) >> 4)*2
+
+#define FLAG3_ENABLE_SHIFTER 0x1
+#define FLAG3_CLUTCH_DEAD_ZONE (0x10|0x20|0x40) // deadZone_percent = ((flag & FLAG3_CLUTCH_DEAD_ZONE) >> 4)*2
 
 typedef struct CalibData
 {
@@ -92,12 +101,12 @@ typedef struct CalibData
   uint32_t calibID;
   /* bool whether to automatically calibrate the pedals at a power cycle or use a static calibration */
   uint8_t pedals_auto_calib; 
-  /* flags, see the FLAG_* defines for the meaning of the bits */
-  uint8_t flags;
-  /* bool whether to use the pedals */
-  uint8_t use_pedals;
-  /* bool whether to use the shifter */
-  uint8_t use_shifter;
+  /* flag1, see the FLAG1_* defines for the meaning of the bits */
+  uint8_t flag1;
+  /* flag2, see the FLAG2_* defines for the meaning of the bits */
+  uint8_t flag2;
+  /* flag3, see the FLAG3_* defines for the meaning of the bits */
+  uint8_t flag3;
   /* size of median filter to filter pedal values */
   uint8_t pedal_median_size;
   /* size of median filter to filter shifter values */
@@ -129,7 +138,7 @@ static Calibration calibDefault = {
     {
         CALIB_DATA_MAGIC_NUMBER,
         1, /* pedals auto calib */
-        0, /* flags, everything on default */
+        0, /* flag1, everything on default */
         1, /* use pedals */
         1, /* use shifter */
         0, /* pedals median size */
@@ -195,14 +204,18 @@ static Pedal* gasPedal = 0;
 static Pedal* brakePedal = 0;
 static Pedal* clutchPedal = 0;
 
-int axisValue(struct Pedal* input) {
-
+int axisValue(struct Pedal* input, int dead_zone) 
+{
   int physicalRange = input->max - input->min;
+  int delta = dead_zone == 0 ? 0 : ((int32_t)physicalRange*(int32_t)dead_zone/(int32_t)100);
+  int max = input->max - delta;
+  int min = input->min + delta;
+  physicalRange = max - min;
   if (physicalRange == 0) {
     return 0;
   }
 
-  int result = map(input->cur, input->min, input->max, 0, MAX_AXIS);
+  int result = map(input->cur, min, max, 0, MAX_AXIS);
 
   if (result < 0) {
     return 0;
@@ -213,7 +226,7 @@ int axisValue(struct Pedal* input) {
   return result;
 }
 
-void processPedal(struct Pedal* input, SignalFilter *flt, uint8_t filterSize) 
+void processPedal(struct Pedal* input, SignalFilter *flt, uint8_t filterSize, int dead_zone) 
 {
   input->cur = apply_filter(flt, filterSize, analogRead(input->pin));
 
@@ -222,10 +235,10 @@ void processPedal(struct Pedal* input, SignalFilter *flt, uint8_t filterSize)
     // calibrate, we want the highest this pedal has been
     input->max = input->cur > input->max ? input->cur : input->max;
     // same for lowest, but bottom out at current value rather than 0
-    input->min = input->min == 0 || input->cur < input->min ? input->cur : input->min;
+    input->min = input->cur < input->min ? input->cur : input->min;
   }
 
-  input->axis = axisValue(input);
+  input->axis = axisValue(input, dead_zone);
 }
 
 void setXAxis(void* in) {
@@ -327,7 +340,7 @@ int getCurrentGear(int shifterPosition[], int btns[]) {
       }
     } else if ( x >= calibration.data.shifter_x_56 )
     {
-      uint8_t reverse = (calibration.data.flags & FLAG_REVERSE_RIGHT_RED) ? btns[BUTTON_RED_RIGHT] : btns[BUTTON_REVERSE];
+      uint8_t reverse = (calibration.data.flag1 & FLAG1_REVERSE_RIGHT_RED) ? btns[BUTTON_RED_RIGHT] : btns[BUTTON_REVERSE];
       if(reverse)
       {
         if( gear != 4 && gear != 6 ) /* avoid toggles between neighboring gears */
@@ -393,6 +406,26 @@ void setButtonStates(int buttons[], int gear) {
   }
 }
 
+void set_dead_zone(uint8_t dz, int pedal, CalibData *calib)
+{
+    dz /= 2;
+    switch(pedal)
+    {
+        case 0:
+            calib->flag2 &= ~(FLAG2_GAS_DEAD_ZONE);
+            calib->flag2 |= (dz) << 4;
+            break;
+        case 1:
+            calib->flag2 &= ~(FLAG2_BRAKE_DEAD_ZONE);
+            calib->flag2 |= (dz) << 1;
+            break;
+        case 2:
+            calib->flag3 &= ~(FLAG3_CLUTCH_DEAD_ZONE);
+            calib->flag3 |= (dz) << 4;
+            break;
+    }
+}
+
 #define CALIB_MIN(calibValue, curValue, minValue) if( calibValue < 0 || curValue < minValue ) { calibValue = minValue = curValue; }
 #define CALIB_MAX(calibValue, curValue, maxValue) if( calibValue < 0 || curValue > maxValue ) { calibValue = maxValue = curValue; }
 #define CALIB_RANGE(calibValue, curValue, minValue, maxValue) \
@@ -439,6 +472,20 @@ void calib(struct Pedal *gas, Pedal *brake, Pedal *clutch, int shifter_X, int sh
       SET_SHIFTER_FILTSIZE_7 = '6',
       SET_SHIFTER_FILTSIZE_9 = '8',
       SET_SHIFTER_FILTSIZE_15 = 'F',      
+      SET_COMBINE_Z_EQUAL_X_MINUS_Z = '+',
+      SET_COMBINE_Z_EQUAL_Z_MINUS_X = '-',
+      SET_COMBINE_Z_EQUAL_Z = '.',
+      SET_DEAD_ZONE00 = '^',
+      SET_DEAD_ZONE02 = '!',
+      SET_DEAD_ZONE04 = '"',
+      SET_DEAD_ZONE06 = ']',
+      SET_DEAD_ZONE08 = '$',
+      SET_DEAD_ZONE10 = '%',
+      SET_DEAD_ZONE12 = '&',
+      SET_DEAD_ZONE14 = '/',
+      SELECT_BRAKE_DEAD_ZONE = '(',
+      SELECT_CLUTCH_DEAD_ZONE = ')',
+      SELECT_GAS_DEAD_ZONE = '[',
       SET_PRINT_MODE = 'O',
       RESET_PRINT_MODE = 'o',
       STORE_CALIB = 'w',
@@ -446,6 +493,7 @@ void calib(struct Pedal *gas, Pedal *brake, Pedal *clutch, int shifter_X, int sh
       EEPROM_CALIB = 'U'
   } currentMode = IDLE;
   static int calibValue = -1;
+  static int deadZoneSelect = -1;
   if (Serial.available() > 0) 
   {
     char rx_byte = Serial.read();
@@ -464,20 +512,20 @@ void calib(struct Pedal *gas, Pedal *brake, Pedal *clutch, int shifter_X, int sh
       case SET_PEDAL_AUTO_CALIBRATE: calibration.data.pedals_auto_calib = 1; break;
       case RESET_PEDAL_AUTO_CALIBRATE: calibration.data.pedals_auto_calib= 0; break;
       
-      case SET_PEDALS_ENABLED: calibration.data.use_pedals = 1; break;
-      case RESET_PEDALS_ENABLED: calibration.data.use_pedals = 0; break;
+      case SET_PEDALS_ENABLED: calibration.data.flag2 |= FLAG2_ENABLE_PEDALS; break;
+      case RESET_PEDALS_ENABLED: calibration.data.flag2 &= ~FLAG2_ENABLE_PEDALS; break;
       
-      case SET_SHIFTER_ENABLED: calibration.data.use_shifter = 1; break;
-      case RESET_SHIFTER_ENABLED: calibration.data.use_shifter = 0; break;
+      case SET_SHIFTER_ENABLED: calibration.data.flag3 |= FLAG3_ENABLE_SHIFTER; break;
+      case RESET_SHIFTER_ENABLED: calibration.data.flag3 &= ~FLAG3_ENABLE_SHIFTER; break;
       
-      case SET_GAS_INVERTED: calibration.data.flags |= FLAG_INVERT_GAS; break;
-      case RESET_GAS_INVERTED: calibration.data.flags &= ~FLAG_INVERT_GAS; break;
-      case SET_BRAKE_INVERTED: calibration.data.flags |= FLAG_INVERT_BRAKE; break;
-      case RESET_BRAKE_INVERTED: calibration.data.flags &= ~FLAG_INVERT_BRAKE; break;
-      case SET_CLUTCH_INVERTED: calibration.data.flags |= FLAG_INVERT_CLUTCH; break;
-      case RESET_CLUTCH_INVERTED: calibration.data.flags &= ~FLAG_INVERT_CLUTCH; break;
-      case SET_REVERSE_RIGHT_RED: calibration.data.flags |= FLAG_REVERSE_RIGHT_RED; break;
-      case RESET_REVERSE_RIGHT_RED: calibration.data.flags &= ~FLAG_REVERSE_RIGHT_RED; break;
+      case SET_GAS_INVERTED: calibration.data.flag1 |= FLAG1_INVERT_GAS; break;
+      case RESET_GAS_INVERTED: calibration.data.flag1 &= ~FLAG1_INVERT_GAS; break;
+      case SET_BRAKE_INVERTED: calibration.data.flag1 |= FLAG1_INVERT_BRAKE; break;
+      case RESET_BRAKE_INVERTED: calibration.data.flag1 &= ~FLAG1_INVERT_BRAKE; break;
+      case SET_CLUTCH_INVERTED: calibration.data.flag1 |= FLAG1_INVERT_CLUTCH; break;
+      case RESET_CLUTCH_INVERTED: calibration.data.flag1 &= ~FLAG1_INVERT_CLUTCH; break;
+      case SET_REVERSE_RIGHT_RED: calibration.data.flag1 |= FLAG1_REVERSE_RIGHT_RED; break;
+      case RESET_REVERSE_RIGHT_RED: calibration.data.flag1 &= ~FLAG1_REVERSE_RIGHT_RED; break;
       
       case SET_PEDAL_FILTSIZE_OFF: calibration.data.pedal_median_size = 0; break;
       case SET_PEDAL_FILTSIZE_3: calibration.data.pedal_median_size = 3; break;
@@ -493,6 +541,20 @@ void calib(struct Pedal *gas, Pedal *brake, Pedal *clutch, int shifter_X, int sh
       case SET_SHIFTER_FILTSIZE_9: calibration.data.shifter_median_size = 15; break;
       case SET_SHIFTER_FILTSIZE_15: calibration.data.shifter_median_size = 49; break;
       
+      case SET_COMBINE_Z_EQUAL_X_MINUS_Z: calibration.data.flag1 &= ~(FLAG1_COMBINE_Z_EQUALS_Z_MINUS_X); calibration.data.flag1 |= FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z; break;
+      case SET_COMBINE_Z_EQUAL_Z_MINUS_X: calibration.data.flag1 &= ~(FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z); calibration.data.flag1 |= FLAG1_COMBINE_Z_EQUALS_Z_MINUS_X; break;
+      case SET_COMBINE_Z_EQUAL_Z: calibration.data.flag1 &= ~(FLAG1_COMBINE_Z_EQUALS_Z_MINUS_X|FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z); break;
+      case SET_DEAD_ZONE00: set_dead_zone(0, deadZoneSelect, &calibration.data); break;
+      case SET_DEAD_ZONE02: set_dead_zone(2, deadZoneSelect, &calibration.data); break;
+      case SET_DEAD_ZONE04: set_dead_zone(4, deadZoneSelect, &calibration.data); break;
+      case SET_DEAD_ZONE06: set_dead_zone(6, deadZoneSelect, &calibration.data); break;
+      case SET_DEAD_ZONE08: set_dead_zone(8, deadZoneSelect, &calibration.data); break;
+      case SET_DEAD_ZONE10: set_dead_zone(10, deadZoneSelect, &calibration.data); break;
+      case SET_DEAD_ZONE12: set_dead_zone(12, deadZoneSelect, &calibration.data); break;
+      case SET_DEAD_ZONE14: set_dead_zone(14, deadZoneSelect, &calibration.data); break;
+      case SELECT_BRAKE_DEAD_ZONE: deadZoneSelect = 1; break;
+      case SELECT_CLUTCH_DEAD_ZONE: deadZoneSelect = 2; break;
+      case SELECT_GAS_DEAD_ZONE: deadZoneSelect = 0; break;
       case SET_PRINT_MODE: printMode = 1; break;
       case RESET_PRINT_MODE: printMode = 0;; break;
 
@@ -612,27 +674,42 @@ SignalFilter signalFilters[5];
 void loop() {
   debug.profiling[2] = micros();
   // pedals
-  processPedal(gasPedal, &signalFilters[0], calibration.data.pedal_median_size);
-  processPedal(brakePedal, &signalFilters[1], calibration.data.pedal_median_size);
-  processPedal(clutchPedal, &signalFilters[2], calibration.data.pedal_median_size);
+  processPedal(gasPedal, &signalFilters[0], calibration.data.pedal_median_size, 
+               ((calibration.data.flag2 & FLAG2_GAS_DEAD_ZONE) >> 4)*2);
+  processPedal(brakePedal, &signalFilters[1], calibration.data.pedal_median_size,
+               ((calibration.data.flag2 & FLAG2_BRAKE_DEAD_ZONE) >> 1)*2);
+  processPedal(clutchPedal, &signalFilters[2], calibration.data.pedal_median_size,
+               ((calibration.data.flag3 & FLAG3_CLUTCH_DEAD_ZONE) >> 4)*2);
 
-  if(calibration.data.flags & FLAG_INVERT_GAS )
+  if(calibration.data.flag1 & FLAG1_INVERT_GAS )
   {
     Pedal* gas = (Pedal*)gasPedal;
     gas->axis = map(gas->axis, 0, MAX_AXIS, MAX_AXIS, 0);
   }
-  if(calibration.data.flags & FLAG_INVERT_BRAKE )
+  if(calibration.data.flag1 & FLAG1_INVERT_BRAKE )
   {
     Pedal* brake = (Pedal*)brakePedal;
     brake->axis = map(brake->axis, 0, MAX_AXIS, MAX_AXIS, 0);
   }
-  if(calibration.data.flags & FLAG_INVERT_CLUTCH )
+  if(calibration.data.flag1 & FLAG1_INVERT_CLUTCH )
   {
     Pedal* clutch = (Pedal*)clutchPedal;
     clutch->axis = map(clutch->axis, 0, MAX_AXIS, MAX_AXIS, 0);
   }
+  if(calibration.data.flag1 & FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z)
+  {
+      Pedal *clutch = (Pedal*)clutchPedal;
+      Pedal *gas = (Pedal*)gasPedal;
+      clutch->axis = map(gas->axis - clutch->axis, -MAX_AXIS, MAX_AXIS, 0, MAX_AXIS);
+  }
+  if(calibration.data.flag1 & FLAG1_COMBINE_Z_EQUALS_Z_MINUS_X)
+  {
+      Pedal *clutch = (Pedal*)clutchPedal;
+      Pedal *gas = (Pedal*)gasPedal;
+      clutch->axis = map(clutch->axis - gas->axis, -MAX_AXIS, MAX_AXIS, 0, MAX_AXIS);
+  }
 
-  if(calibration.data.use_pedals)
+  if(calibration.data.flag2 & FLAG2_ENABLE_PEDALS)
   {
     setXAxis(gasPedal);
     setYAxis(brakePedal);
@@ -658,7 +735,7 @@ void loop() {
   
   int gear = getCurrentGear(shifterPosition, buttonStates);
 
-  if(calibration.data.use_shifter)
+  if(calibration.data.flag3 & FLAG3_ENABLE_SHIFTER)
   {
     setButtonStates(buttonStates, gear);
   } else

@@ -2,6 +2,7 @@ import struct
 import ctypes as ct
 import sys
 import time
+import os
 import traceback
 from PySide2.QtCore import QRectF, Qt, QObject, QThread, Signal, QMutex, QMutexLocker, QTimer, QSignalBlocker
 from PySide2.QtGui import QBrush, QPen, QColor
@@ -16,10 +17,17 @@ import numpy as np
 # port.
 import inputs
 
-FLAG_INVERT_BRAKE = 0x1
-FLAG_INVERT_GAS = 0x2
-FLAG_INVERT_CLUTCH = 0x4
-FLAG_REVERSE_RIGHT_RED = 0x8
+FLAG1_INVERT_BRAKE = 0x1
+FLAG1_INVERT_GAS = 0x2
+FLAG1_INVERT_CLUTCH = 0x4
+FLAG1_REVERSE_RIGHT_RED = 0x8
+FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z = 0x10
+FLAG1_COMBINE_Z_EQUALS_Z_MINUS_X = 0x20
+FLAG2_ENABLE_PEDALS = 0x1
+FLAG2_BRAKE_DEAD_ZONE = (0x2|0x4|0x8)
+FLAG2_GAS_DEAD_ZONE = (0x10|0x20|0x40)
+FLAG3_ENABLE_SHIFTER = 0x1
+FLAG3_CLUTCH_DEAD_ZONE = (0x10|0x20|0x40)
 
 # following structures need to be synchronized with Arduino C Code
 class CalibData(ct.Structure):
@@ -27,9 +35,9 @@ class CalibData(ct.Structure):
     _fields_ = [
         ("calibID", ct.c_uint32),
         ("pedals_auto_calib", ct.c_uint8),
-        ("flags", ct.c_uint8),
-        ("use_pedals", ct.c_uint8),
-        ("use_shifter", ct.c_uint8),
+        ("flag1", ct.c_uint8),
+        ("flag2", ct.c_uint8),
+        ("flag3", ct.c_uint8),
         ("pedals_median_size", ct.c_uint8),
         ("shifter_median_size", ct.c_uint8),
         ("gasMin", ct.c_uint16),
@@ -161,26 +169,39 @@ class G27CalibGui(QWidget):
                  "Use right red button for reverse instead pushing the gear",
                  "Enable pedals",
                  "Enable shifter"]
-        ] + [QComboBox(), QComboBox()]
-        self.option_cmds = [(b"p", b"P"),
-                            (b"y", b"Y"),
-                            (b"x", b"X"),
-                            (b"z", b"Z"),
-                            (b"q", b"Q"),
-                            (b"e", b"E"),
-                            (b"s", b"S"),
+        ] + [QComboBox(), QComboBox(), QComboBox(), QComboBox(), QComboBox(), QComboBox()]
+        self.option_cmds = [(b"p", b"P"), #0
+                            (b"y", b"Y"), #1
+                            (b"x", b"X"), #2
+                            (b"z", b"Z"), #3
+                            (b"q", b"Q"), #4
+                            (b"e", b"E"), #5
+                            (b"s", b"S"), #6
+                            (b".", b"+", b"-"), #7
+                            (b"[^", b"[!", b"[\"", b"[]", b"[$", b"[%", b"[&", b"[/"),
+                            (b"(^", b"(!", b"(\"", b"(]", b"($", b"(%", b"(&", b"(/"),
+                            (b")^", b")!", b")\"", b")]", b")$", b")%", b")&", b")/"),                            
                             (b"0", b"3", b"5", b"7", b"9", b"f"),
                             (b"1", b"2", b"4", b"6", b"8", b"F"),
                             ]
+        self.option_btns[-6].addItem("Do not combine clutch and gas")
+        self.option_btns[-6].addItem("Combine Clutch and Gas (Clutch = Gas - Clutch)")
+        self.option_btns[-6].addItem("Combine Clutch and Gas (Clutch = Clutch - Gas)")
+        for (idx, name) in [(-5, "Gas"), (-4, "Brake"), (-3, "Clutch")]:
+            for dz in [0,2,4,6,8,10,12,14]:
+                self.option_btns[idx].addItem("%s: %d%% dead zone" % (name, dz))
         for (idx, name) in [(-2, "pedals"), (-1, "shifter")]:
             for size in [0,3,5,9,15,49]:
                 self.option_btns[idx].addItem("off" if size == 0 else (str(size) + "-median"), size)
         for i,b in enumerate(self.option_btns):
-            n_checkboxes = len(self.option_cmds) - 2
+            n_checkboxes = len(self.option_cmds) - 6
             if i < n_checkboxes:
                 grid.addWidget(b, i, 0, 1, 2)
             else:
-                grid.addWidget(QLabel("Pedal filter" if i == n_checkboxes else "Shifter filter", parent=self), i, 0)
+                names = {n_checkboxes: "Combine", 
+                         n_checkboxes + 1: "Gas Dead Zone", n_checkboxes + 2: "Brake Dead Zone", n_checkboxes + 3: "Clutch Dead Zone",
+                         n_checkboxes + 4: "Pedal filter", n_checkboxes + 5: "Shifter filter"}
+                grid.addWidget(QLabel(names[i], parent=self), i, 0)
                 grid.addWidget(b, i, 1)
             if isinstance(b, QCheckBox):
                 b.toggled.connect(self.optionChanged)
@@ -300,14 +321,23 @@ class G27CalibGui(QWidget):
             for b in self.option_btns:
                 blockers.append(QSignalBlocker(b))
             self.option_btns[0].setChecked(values.calib.pedals_auto_calib)
-            self.option_btns[1].setChecked((values.calib.flags & FLAG_INVERT_GAS) != 0)
-            self.option_btns[2].setChecked((values.calib.flags & FLAG_INVERT_BRAKE) != 0)
-            self.option_btns[3].setChecked((values.calib.flags & FLAG_INVERT_CLUTCH) != 0)
-            self.option_btns[4].setChecked((values.calib.flags & FLAG_REVERSE_RIGHT_RED) != 0)
-            self.option_btns[5].setChecked(values.calib.use_pedals)
-            self.option_btns[6].setChecked(values.calib.use_shifter)
-            self.option_btns[7].setCurrentIndex(self.option_btns[7].findData(values.calib.pedals_median_size))
-            self.option_btns[8].setCurrentIndex(self.option_btns[8].findData(values.calib.shifter_median_size))
+            self.option_btns[1].setChecked((values.calib.flag1 & FLAG1_INVERT_GAS) != 0)
+            self.option_btns[2].setChecked((values.calib.flag1 & FLAG1_INVERT_BRAKE) != 0)
+            self.option_btns[3].setChecked((values.calib.flag1 & FLAG1_INVERT_CLUTCH) != 0)
+            self.option_btns[4].setChecked((values.calib.flag1 & FLAG1_REVERSE_RIGHT_RED) != 0)
+            self.option_btns[5].setChecked((values.calib.flag2 & FLAG2_ENABLE_PEDALS) != 0)
+            self.option_btns[6].setChecked((values.calib.flag3 & FLAG3_ENABLE_SHIFTER) != 0)
+            if (values.calib.flag1 & (FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z | FLAG1_COMBINE_Z_EQUALS_Z_MINUS_X)) == 0:
+                self.option_btns[7].setCurrentIndex(0)
+            elif (values.calib.flag1 & FLAG1_COMBINE_Z_EQUALS_X_MINUS_Z) != 0:
+                self.option_btns[7].setCurrentIndex(1)
+            else:
+                self.option_btns[7].setCurrentIndex(2)
+            self.option_btns[8].setCurrentIndex((values.calib.flag2 & FLAG2_GAS_DEAD_ZONE) >> 4)
+            self.option_btns[9].setCurrentIndex((values.calib.flag2 & FLAG2_BRAKE_DEAD_ZONE) >> 1)
+            self.option_btns[10].setCurrentIndex((values.calib.flag3 & FLAG3_CLUTCH_DEAD_ZONE) >> 4)
+            self.option_btns[11].setCurrentIndex(self.option_btns[11].findData(values.calib.pedals_median_size))
+            self.option_btns[12].setCurrentIndex(self.option_btns[12].findData(values.calib.shifter_median_size))
 
             prof = "Total runtime: %9.2f ms | prof[0->1]: %9.2f ms | prof[1->2]: %9.2f ms | prof[2->3]: %9.2f ms | FPS: %04d" % (
                     (dbg.profiling[-1] - dbg.profiling[0])*1e-3,
@@ -353,6 +383,12 @@ class Collector(QObject):
     def sendModeCmd(self, cmd):
         self.serialPort.write(cmd)
         #print("Sent CMD: ", cmd)
+        
+    def stop(self):
+        print("Disabling serial monitor.")
+        self.serialPort.write(b'o')
+        self.timer.stop()
+        self.thread.quit()
 
     def create(self):
         try:
@@ -408,6 +444,10 @@ class JoystickSink(QObject):
         self.timer.timeout.connect(self.readFromDevice, Qt.QueuedConnection)
         self.timer.setInterval(0)
         self.timer.start()
+        
+    def stop(self):
+        self.timer.stop()
+        self.thread.quit()
 
     def readFromDevice(self):
         try:
@@ -426,8 +466,10 @@ def main():
         gui.setWindowTitle("G27 Pedalsand Shifter")
         coll = Collector(vars["tty"])
         coll.valuesChanged.connect(gui.newVals)
+        app.aboutToQuit.connect(coll.stop)
         if vars["jsdev"] is not None:
             js = JoystickSink(vars["jsdev"])
+            app.aboutToQuit.connect(js.stop)
         else:
             js = None
         gui.sendModeCmd.connect(coll.sendModeCmd)
@@ -477,7 +519,7 @@ def main():
         vars["tty"] = list_ports.comports()[0].device
         vars["jsdev"] = inputs.devices.gamepads[0]
         createGui()
-    return  app.exec_()
+    os._exit(app.exec_())
 
 if __name__ == "__main__":
     main()
