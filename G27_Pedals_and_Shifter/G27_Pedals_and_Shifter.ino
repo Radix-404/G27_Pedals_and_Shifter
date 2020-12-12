@@ -14,7 +14,24 @@
 #define GREEN_PIN  5
 #define BLUE_PIN   6
 
-// PEDAL PINS
+// PEDAL PINS - please note the comments of @eriknz in 
+// https://github.com/n-e-y-s/G27_Pedals_and_Shifter/issues/8
+// This is the wiring suggested by eriknz, which does not connect the pedal ground 
+// to +5V (pedals need to be inverted in the calibration gui):
+//
+//| DB9 | Original | Harness | Description | Pro Micro   |
+//|   1 | Black    | Black   | GND         | GND         |
+//|   2 | Orange   | Yellow  | Throttle    | pin 18 (A0) |
+//|   3 | White    | White   | Brake       | pin 19 (A1) |
+//|   4 | Green    | Green   | Clutch      | pin 20 (A2) |
+//|   5 |          |         |             |             |
+//|   6 | connected in pedals plug to pin 9
+//|   7 |          |         |             |             |
+//|   8 |          |         |             |             |
+//|   9 | Red      | Red     | +5V         | +5V         |
+//
+// This is the original wiring from @functionreturnfunction
+//
 //| DB9 | Original | Harness | Description | Pro Micro   |
 //|   1 | Black    | Red     | +5v         | +5v         |
 //|   2 | Orange   | Yellow  | Throttle    | pin 18 (A0) |
