@@ -21,6 +21,7 @@ This fork wouldn't have been possible without the great project from functionret
 Connect the female DB9 connector for the pedals to the board using the pins in the table in the .ino file.  Do the same with the male DB9 for the shifter.
 
 NOTE: when wiring the male connector for the shifter, remember that the pins will read right to left rather than left to right.
+![DB9 Pin](screenshots/db9.webp)
 
 ## Firmware
 
